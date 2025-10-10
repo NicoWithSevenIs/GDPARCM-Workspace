@@ -5,13 +5,12 @@
 #include "material.h"
 #include "../../Threading/Task.h"
 #include <vector>
-#include <array>
+#include <algorithm>
 
-class partition_data {
+class Partition {
     public:
-        int x,y;
-        color** partition;
-
+        int order;
+        std::vector<color> pixels;
 };
 
 class camera {
@@ -26,8 +25,8 @@ public:
     point3 lookat = point3(0, 0, -1);  // Point camera is looking at
     vec3   vup = vec3(0, 1, 0);     // Camera-relative "up" direction
 
-    int vertical_partitions = 1;
-    int horizontal_partitions = 1;
+    int row_partitions = 1;
+
 
     double defocus_angle = 0;  // Variation angle of rays through each pixel
     double focus_dist = 10;    // Distance from camera lookfrom point to plane of perfect focus
@@ -57,66 +56,50 @@ public:
 
     void render_partitioned(const hittable& world) {
 
-        vertical_partitions = std::max(vertical_partitions, 1);
-        horizontal_partitions = std::max(horizontal_partitions, 1);
-
-        int h_step = image_width / horizontal_partitions;
-        int v_step = image_height / vertical_partitions;
-
-        int h_offset = image_width % horizontal_partitions;
-        int v_offset = image_height % vertical_partitions;
+        row_partitions = std::max(row_partitions, 1);
+        
+        int step = image_height/ row_partitions;
+        int offset = image_height % row_partitions;
 
 
         std::vector<std::thread*> thread_list;
+        auto partitions = new Partition* [row_partitions];
+
+        for (int i = 0; i < row_partitions; i++) {
+
+            auto t = Task::Spawn([=, &world, &partitions](){
+                auto p = new Partition();
+                p->order = i;
+
+                int lb = step * i;
+                int ub = step * (i + 1);
+
+                if(i == row_partitions-1)
+                    ub += offset;
 
 
-        color** c = new color*[image_height];
-        for (int i = 0; i < image_height; i++) {
-            c[i] = new color[image_width];
-        }
+                for (int h = lb ; h < ub ; h++) {
+                    for (int w = 0; w < image_width; w++) {
 
-        for (int j = 0; j < vertical_partitions; j++) {
-            for (int i = 0; i < horizontal_partitions; i++) {
-                //pass by value to prevent i value modification across threads
+                        auto pixel_color = color(0, 0, 0);
 
-
-                auto t = Task::Spawn([=, &world, &c]() {
-                    std::cout << "Task Started\n";
-                    for (int h = v_step * j; h < v_step * (j + 1); h++) {
-                        for (int w = h_step * i; w < h_step * (i + 1); w++) {
-                            color pixel_color(0, 0, 0);
-                            for (int sample = 0; sample < samples_per_pixel; sample++) {
-                                ray r = get_ray(w, h);
-                                pixel_color += ray_color(r, max_depth, world);
-                            }
-
-                            pixel_color = pixel_color * pixel_samples_scale;
-
-                            auto r = pixel_color.x();
-                            auto g = pixel_color.y();
-                            auto b = pixel_color.z();
-
-                            // Apply a linear to gamma transform for gamma 2
-                            r = linear_to_gamma(r);
-                            g = linear_to_gamma(g);
-                            b = linear_to_gamma(b);
-
-                            // Translate the [0,1] component values to the byte range [0,255].
-                            int rbyte = int(255.999 * r);
-                            int gbyte = int(255.999 * g);
-                            int bbyte = int(255.999 * b);
-
-                            //std::cout << rbyte << " " << gbyte << " " << bbyte << std::endl;
-                            c[w][h] = color(rbyte, gbyte, bbyte);  
+                        for (int sample = 0; sample < samples_per_pixel; sample++) {
+                            ray r = get_ray(w, h);
+                            pixel_color += ray_color(r, max_depth, world);
                         }
+
+                        p->pixels.push_back(construct_pixel(pixel_color * pixel_samples_scale));
+
                     }
-                    std::cout << "Task Done\n";
-                    }, false);
+                }
+            
+                partitions[i] = p;
 
-               thread_list.push_back(t);
-            }
+            }, false);
+
+
+            thread_list.push_back(t);
         }
-
 
        for (auto t : thread_list)
            t->join();
@@ -124,24 +107,28 @@ public:
         std::stringstream s;
         std::ofstream pic("balls.ppm");
 
-        s << "P3\n" << image_width << ' ' << image_height << "\n255\n";
+        std::vector<Partition*> vec(partitions, partitions + row_partitions);
 
-       
-        for (int h =0; h< image_height; h++) {
-            for (int w = 0; w < image_width; w++) {
-                color cl = c[w][h];
-                s << cl.x() << " " << cl.y() << " " << cl.z() << "\n";
+        std::sort(vec.begin(), vec.end(), [](Partition* a, Partition* b){
+            return a->order < b->order;
+        });
+
+        s << "P3\n" << image_width << ' ' << image_height << "\n255\n";  
+        
+        for (auto p : vec) {
+            for (auto c : p->pixels) {
+                s << c.x() << " " << c.y() << " " << c.z() << "\n";
             }
         }
-        
          
         pic << s.str();
         pic.close();
 
+        system("start balls.ppm");
 
-        for(int i =0; i < image_height; i++)
-            delete[] c[i];
-        delete[] c;
+        for (auto i : vec) {
+            delete i;
+        }
     }
     void render(const hittable& world) {
       
