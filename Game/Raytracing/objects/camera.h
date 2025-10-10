@@ -7,12 +7,43 @@
 #include <vector>
 #include <array>
 
-class partition_data {
+class color_int {
     public:
-        int x,y;
-        color** partition;
+        int x;
+        int y;
+        int z;
 
+    public:
+        color_int(int x, int y, int z) : x(x), y(y), z(z) {}
+        color_int(): x(0), y(0), z(0){}
 };
+
+class Partition {
+    public:
+        int start_y = 0, start_x = 0;
+        int r = 0, c = 0;
+        color_int** partition;
+
+        inline Partition(int r, int c) {
+            this->r = r;
+            this->c = c;
+
+            partition = new color_int *[r];
+            for (int i = 0; i < r; i++) {
+                partition[i] = new color_int[c];
+            }
+        }
+
+        inline ~Partition() {
+            for (int i = 0; i < r; i++) {
+                delete[] partition[i];
+            }
+            delete[] partition;
+        }
+};
+
+
+
 
 class camera {
 public:
@@ -68,20 +99,27 @@ public:
 
 
         std::vector<std::thread*> thread_list;
+        std::vector<Partition*> partitions_list;
 
-
-        color** c = new color*[image_height];
-        for (int i = 0; i < image_height; i++) {
-            c[i] = new color[image_width];
-        }
 
         for (int j = 0; j < vertical_partitions; j++) {
             for (int i = 0; i < horizontal_partitions; i++) {
                 //pass by value to prevent i value modification across threads
 
 
-                auto t = Task::Spawn([=, &world, &c]() {
-                    std::cout << "Task Started\n";
+                auto t = Task::Spawn([=, &world, &partitions_list]() {
+                    
+                    int h_lb = v_step * j;
+                    int h_ub = v_step * (j + 1);
+
+                    int w_lb = h_step * i;
+                    int w_ub = h_step * (i + 1);
+
+                    auto p_data = new Partition(v_step, h_step);
+                    p_data->start_x = w_lb;
+                    p_data->start_y = h_lb;
+
+
                     for (int h = v_step * j; h < v_step * (j + 1); h++) {
                         for (int w = h_step * i; w < h_step * (i + 1); w++) {
                             color pixel_color(0, 0, 0);
@@ -90,26 +128,33 @@ public:
                                 pixel_color += ray_color(r, max_depth, world);
                             }
 
-                            pixel_color = pixel_color * pixel_samples_scale;
+                            pixel_color = pixel_samples_scale * pixel_color;
 
                             auto r = pixel_color.x();
                             auto g = pixel_color.y();
                             auto b = pixel_color.z();
 
+                          
                             // Apply a linear to gamma transform for gamma 2
                             r = linear_to_gamma(r);
                             g = linear_to_gamma(g);
                             b = linear_to_gamma(b);
+                          
 
                             // Translate the [0,1] component values to the byte range [0,255].
                             int rbyte = int(255.999 * r);
                             int gbyte = int(255.999 * g);
                             int bbyte = int(255.999 * b);
 
+                            int x = w - w_lb;
+                            int y = h - h_lb;
+
                             //std::cout << rbyte << " " << gbyte << " " << bbyte << std::endl;
-                            c[w][h] = color(rbyte, gbyte, bbyte);  
+                            p_data->partition[y][x] = color_int(rbyte, gbyte, bbyte);
                         }
                     }
+
+                    partitions_list.push_back(p_data);
                     std::cout << "Task Done\n";
                     }, false);
 
@@ -124,24 +169,46 @@ public:
         std::stringstream s;
         std::ofstream pic("balls.ppm");
 
-        s << "P3\n" << image_width << ' ' << image_height << "\n255\n";
+        color_int** c = new color_int *[image_height];
+        for (int i = 0; i < image_height; i++) {
+            c[i] = new color_int[image_width];
+        }
 
-       
+        std::cout << partitions_list.size() << std::endl;
+
+        
+        for (auto partition : partitions_list) {
+            for (int h = 0; h < v_step; h++) {
+                for (int w = 0; w < h_step; w++) {
+                    c[partition->start_y + h][partition->start_x + w] = partition->partition[h][w];
+                }
+            }
+        }
+
+
+        s << "P3\n" << image_width << ' ' << image_height << "\n255\n";
         for (int h =0; h< image_height; h++) {
             for (int w = 0; w < image_width; w++) {
-                color cl = c[w][h];
-                s << cl.x() << " " << cl.y() << " " << cl.z() << "\n";
+                color_int cl = c[h][w];
+                s << cl.x << " " << cl.y << " " << cl.z << "\n";
             }
         }
         
+      
+
          
         pic << s.str();
         pic.close();
 
+        system("start balls.ppm");
 
-        for(int i =0; i < image_height; i++)
+        for (int i = 0; i < image_height; i++) {
             delete[] c[i];
+        }
         delete[] c;
+
+        for(auto partition: partitions_list)
+            delete partition;
     }
     void render(const hittable& world) {
       
